@@ -1,5 +1,5 @@
 #!/bin/bash
-# Versão 8.2.25 do script de instalação automatizada do Zabbix 7.2 com verificações pós-instalação
+# Versão 8.2.25 do script de instalação automatizada do Zabbix 7.2 com backup de configurações e verificações pós-instalação
 # Criado por André Rodrigues
 # Testado em Oracle Linux 9.5, Red Hat Enterprise Linux 9.5 (Plow) e Rocky Linux 9.5 (Blue Onyx)
 # VMware® Workstation 17 Pro 17.5.2 build-23775571
@@ -28,7 +28,19 @@ trap 'log_result "Erro na linha ${LINENO}: comando [${BASH_COMMAND}] retornou o 
 COLUMNS=$(tput cols 2>/dev/null || echo 80)
 
 #######################################
-# Mensagens de cabeçalho e disclaimers
+# Função para realizar backup de arquivos de configuração
+#######################################
+backup_config() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        cp -n "$file" "${file}.bak" && log_result "Backup de $file criado em ${file}.bak" || log_result "Erro ao criar backup de $file"
+    else
+        log_result "Arquivo $file não encontrado. Nenhum backup necessário."
+    fi
+}
+
+#######################################
+# Cabeçalho e disclaimers
 #######################################
 HEADER_MSG=$(cat <<'EOF'
 Zabbix 7.2 | MariaDB | Apache - Script 8.2.25
@@ -40,7 +52,7 @@ LINUX_VER=$PRETTY_NAME
 
 DISCLAIMER_EN="$(echo -e "$HEADER_MSG")\n\nDetected system version: $LINUX_VER\n
 This is version 8.2.25 of the Zabbix 7.2 automated installation script using MariaDB and Apache.
-This script was created by André Rodrigues and tested on Oracle Linux 9.5, Red Hat Enterprise Linux 9.5, and Rocky Linux 9.5 on VMware® Workstation 17 Pro 17.5.2.
+This script was created by André Rodrigues and tested on Oracle Linux 9.5, RHEL 9.5, and Rocky Linux 9.5 on VMware® Workstation 17 Pro 17.5.2.
 For inquiries or permissions, contact: technova.sti@outlook.com
 If you were able to install your Zabbix server with little effort, please support via PIX :)
 technova.sti@outlook.com
@@ -48,13 +60,13 @@ Thank you!
 "
 
 DISCLAIMER_ES="$(echo -e "$HEADER_MSG")\n\nVersión del sistema detectada: $LINUX_VER\n
-Este script fue creado por André Rodrigues y probado en Oracle Linux 9.5, Red Hat Enterprise Linux 9.5, y Rocky Linux 9.5 en VMware® Workstation 17 Pro 17.5.2.
+Este script fue creado por André Rodrigues y probado en Oracle Linux 9.5, RHEL 9.5, y Rocky Linux 9.5 en VMware® Workstation 17 Pro 17.5.2.
 Para consultas o permisos, contáctenos a: technova.sti@outlook.com
 ¡Gracias!
 "
 
 DISCLAIMER_PT="$(echo -e "$HEADER_MSG")\n\nVersão do sistema detectado: $LINUX_VER\n
-Este script foi criado por André Rodrigues e testado em Oracle Linux 9.5, Red Hat Enterprise Linux 9.5 e Rocky Linux 9.5 em VMware® Workstation 17 Pro 17.5.2.
+Este script foi criado por André Rodrigues e testado em Oracle Linux 9.5, RHEL 9.5 e Rocky Linux 9.5 em VMware® Workstation 17 Pro 17.5.2.
 Para dúvidas ou permissões, contate: technova.sti@outlook.com
 Obrigado!
 "
@@ -120,7 +132,7 @@ setenforce 0 >> "$RESULTS_FILE" 2>> "$ERRORS_FILE"
 sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config >> "$RESULTS_FILE" 2>> "$ERRORS_FILE"
 
 #######################################
-# Instala o repositório Remi via download com wget para evitar timeout
+# Instala o repositório Remi via wget com timeout
 #######################################
 log_result "Baixando repositório Remi..."
 REMI_RPM="remi-release-9.rpm"
@@ -178,6 +190,7 @@ MARIADB_VERSION=$(mysql --version | awk '{print $5}' | sed 's/,//')
 log_result "Versão do MariaDB instalada: $MARIADB_VERSION"
 CONFIG_FILE="/etc/my.cnf.d/mariadb-server.cnf"
 if [ -f "$CONFIG_FILE" ]; then
+    backup_config "$CONFIG_FILE"
     sed -i 's/^\s*bind-address\s*=.*$/bind-address = 0.0.0.0/' "$CONFIG_FILE" >> "$RESULTS_FILE" 2>> "$ERRORS_FILE"
 fi
 systemctl restart mariadb >> "$RESULTS_FILE" 2>> "$ERRORS_FILE"
@@ -334,7 +347,11 @@ fi
 log_result "Desativando a opção log_bin_trust_function_creators..."
 mysql -uroot -p${DB_ROOT_PASSWORD} -e "SET GLOBAL log_bin_trust_function_creators = 0;" >> "$RESULTS_FILE" 2>> "$ERRORS_FILE"
 
+#######################################
+# Configuração do arquivo de configuração do Zabbix
+#######################################
 log_result "Configurando o arquivo de configuração do Zabbix..."
+backup_config "/etc/zabbix/zabbix_server.conf"
 sed -i "s/^# DBPassword=.*/DBPassword=${ZABBIX_DB_PASSWORD}/" /etc/zabbix/zabbix_server.conf >> "$RESULTS_FILE" 2>> "$ERRORS_FILE"
 if ! grep -q "^DBPassword=" /etc/zabbix/zabbix_server.conf; then
     echo "DBPassword=${ZABBIX_DB_PASSWORD}" >> /etc/zabbix/zabbix_server.conf
@@ -344,7 +361,7 @@ if ! grep -q "^PidFile=" /etc/zabbix/zabbix_server.conf; then
 fi
 
 #######################################
-# Configura o firewall e diretórios
+# Configura o firewall e diretórios necessários
 #######################################
 log_result "Configurando o firewall para HTTP e porta 10051 (Zabbix Server)..."
 firewall-cmd --add-service=http --permanent >> "$RESULTS_FILE" 2>> "$ERRORS_FILE"
@@ -366,6 +383,7 @@ log_result "Instalando SNMP e utilitários..."
 dnf install -y net-snmp net-snmp-utils >> "$RESULTS_FILE" 2>> "$ERRORS_FILE"
 log_result "Configurando o SNMP..."
 if [ -f /etc/snmp/snmpd.conf ]; then
+    backup_config "/etc/snmp/snmpd.conf"
     cp /etc/snmp/snmpd.conf /etc/snmp/snmpd.conf.bkp >> "$RESULTS_FILE" 2>> "$ERRORS_FILE"
 fi
 cat <<EOF > /etc/snmp/snmpd.conf
@@ -411,21 +429,20 @@ post_installation_checks() {
 }
 
 #######################################
-# Finaliza a instalação e executa as verificações pós-instalação
+# Finaliza a instalação e executa verificações pós-instalação
 #######################################
 # Executa as verificações pós-instalação
 post_installation_checks
 HOST_IP=$(hostname -I | awk '{print $1}')
 log_result "Instalação concluída! Acesse http://$HOST_IP/zabbix para finalizar a configuração via interface web.
 
+
 Informações importantes:
 
-Para acessar o banco de dados durante a configuração, utilize as seguintes credenciais:
+Para acessar a instância do banco de dados do Zabbix durante a configuração via interface web, utilize as seguintes credenciais:
 Usuário: zabbix
 Senha: zabbix
 
-Para realizar o login na interface web do Zabbix, utilize:
+Para realizar o login na interface web do Zabbix após a configuração via interface web, utilize as seguintes credenciais:
 Usuário: Admin
 Senha: zabbix"
-
-
